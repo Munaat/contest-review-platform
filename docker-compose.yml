@@ -1,0 +1,108 @@
+# Платформа онлайн-соревнований по программированию с экспертной проверкой.
+# Запуск всей системы: docker compose up --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5433:5432"]
+    volumes:
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      # пользователь guest подключается только с localhost, сервисам нужен свой
+      RABBITMQ_DEFAULT_USER: contest
+      RABBITMQ_DEFAULT_PASS: contest
+    ports: ["5672:5672", "15672:15672"]
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      retries: 30
+
+  auth-service:
+    build: ./services/auth-service
+    ports: ["8001:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+      JWT_SECRET: dev-secret-change-me
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+  user-service:
+    build: ./services/user-service
+    ports: ["8002:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+      AUTH_URL: http://auth-service:8000
+      LEADERBOARD_URL: http://leaderboard-service:8000
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+  problem-service:
+    build: ./services/problem-service
+    ports: ["8003:8000"]
+    environment:
+      POSTGRES_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/problem_db
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  contest-service:
+    build: ./services/contest-service
+    ports: ["8004:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+  submission-service:
+    build: ./services/submission-service
+    ports: ["8005:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+      CONTEST_URL: http://contest-service:8000
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+  review-service:
+    build: ./services/review-service
+    ports: ["8006:8000"]
+    environment:
+      POSTGRES_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/review_db
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+      PROBLEM_URL: http://problem-service:8000
+      CONTEST_URL: http://contest-service:8000
+      REVIEW_DEADLINE_SECONDS: "120"   # срок проверки; короткий, чтобы было видно переназначение
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+
+  leaderboard-service:
+    build: ./services/leaderboard-service
+    ports: ["8007:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+      CONTEST_URL: http://contest-service:8000
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+  notification-service:
+    build: ./services/notification-service
+    ports: ["8008:8000"]
+    environment:
+      AMQP_URL: amqp://contest:contest@rabbitmq:5672/
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  rabbitdata:
